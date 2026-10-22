@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: dual-tank-coop
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
