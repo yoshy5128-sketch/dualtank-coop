@@ -20,11 +20,11 @@ function stick(id,knob,fn){let el=$(id);el.addEventListener('pointerdown',e=>{el
 const delta=(a,b,n)=>{let d=a-b;return d-Math.round(d/n)*n};function resize(){let d=devicePixelRatio||1;canvas.width=Math.round(innerWidth*d);canvas.height=Math.round(innerHeight*d);ctx.setTransform(d,0,0,d,0,0);}window.addEventListener('resize',resize);resize();
 function box(x,y,w,h,color){ctx.fillStyle=color;ctx.fillRect(x,y,w,h);}
 const TANK_ART_SOURCES={
- player:{hull:'/assets/tanks/player_hull.png',turret:'/assets/tanks/player_turret.png',fallback:'#b4c98e'},
- normal:{hull:'/assets/tanks/player_hull.png',turret:'/assets/tanks/player_turret.png',fallback:'#9dac89'},
- scout:{hull:'/assets/tanks/scout_hull.png',turret:'/assets/tanks/scout_turret.png',fallback:'#c98f50'},
- heavy:{hull:'/assets/tanks/heavy_hull.png',turret:'/assets/tanks/heavy_turret.png',fallback:'#8b3832'},
- sniper:{hull:'/assets/tanks/sniper_hull.png',turret:'/assets/tanks/sniper_turret.png',fallback:'#b85943'}
+ player:{hull:'/assets/tanks/player_hull.png?v=048',turret:'/assets/tanks/player_turret.png?v=048',fallback:'#b4c98e'},
+ normal:{hull:'/assets/tanks/player_hull.png?v=048',turret:'/assets/tanks/player_turret.png?v=048',fallback:'#9dac89'},
+ scout:{hull:'/assets/tanks/scout_hull.png?v=048',turret:'/assets/tanks/scout_turret.png?v=048',fallback:'#c98f50'},
+ heavy:{hull:'/assets/tanks/heavy_hull.png?v=048',turret:'/assets/tanks/heavy_turret.png?v=048',fallback:'#8b3832'},
+ sniper:{hull:'/assets/tanks/sniper_hull.png?v=048',turret:'/assets/tanks/sniper_turret.png?v=048',fallback:'#b85943'}
 };
 function bootTankArt(){
  const variants={};
@@ -47,17 +47,27 @@ function drawFallbackTank(x,y,a,turret,color,scale=1){
  ctx.save();ctx.translate(x,y);ctx.rotate(turret);
  box(0,-4,27,8,'#d6cc9b');ctx.beginPath();ctx.arc(0,0,10*scale,0,PI);ctx.fillStyle=color;ctx.fill();ctx.restore();
 }
+// Rotation centers are the actual turret rings, not sprite-image centers.
+const TANK_RING_ANCHORS={
+ player:{hx:127,hy:320,tx:115,ty:198},
+ normal:{hx:127,hy:320,tx:115,ty:198},
+ scout:{hx:108,hy:238,tx:96,ty:164},
+ heavy:{hx:174,hy:309,tx:154,ty:213},
+ sniper:{hx:117,hy:243,tx:111,ty:225},
+};
 function tank(x,y,a,turret,variant='player',radius=24){
  const art=tankArt.variants[variant]||tankArt.variants.player;
  const hull=art?.hull,tur=art?.turret;
  const loaded=hull&&tur&&hull.complete&&tur.complete&&hull.naturalWidth&&tur.naturalWidth;
  if(!loaded){drawFallbackTank(x,y,a,turret,art?.fallback||'#b4c98e',Math.max(.78,radius/20));return;}
+ const pos=TANK_RING_ANCHORS[variant]||TANK_RING_ANCHORS.player;
+ // The two sprites share the same world-space turret ring and exact scale.
  const s=(radius*2.9)/Math.max(1,hull.naturalHeight);
  ctx.save();ctx.translate(x,y);ctx.rotate(a-Math.PI/2);
- ctx.drawImage(hull,-hull.naturalWidth*s/2,-hull.naturalHeight*s/2,hull.naturalWidth*s,hull.naturalHeight*s);
+ ctx.drawImage(hull,-pos.hx*s,-pos.hy*s,hull.naturalWidth*s,hull.naturalHeight*s);
  ctx.restore();
  ctx.save();ctx.translate(x,y);ctx.rotate(turret-Math.PI/2);
- ctx.drawImage(tur,-tur.naturalWidth*s/2,-tur.naturalHeight*s/2,tur.naturalWidth*s,tur.naturalHeight*s);
+ ctx.drawImage(tur,-pos.tx*s,-pos.ty*s,tur.naturalWidth*s,tur.naturalHeight*s);
  ctx.restore();
  if(variant==='player'){
   ctx.beginPath();ctx.arc(x,y,radius+3,0,PI);ctx.strokeStyle='rgba(214,239,190,.35)';ctx.lineWidth=1.3;ctx.stroke();
@@ -71,7 +81,7 @@ function render(){
  const blend=1-Math.exp(-dt*13);
  const w=innerWidth,h=innerHeight;ctx.clearRect(0,0,w,h);box(0,0,w,h,'#566c54');if(!state)return;const t=state.tank,map=state.map;let zoom=Math.max(.48,Math.min(.85,w/1250,h/690)); // wider battlefield / small tank
 ctx.save();ctx.translate(w/2,h/2);ctx.scale(zoom,zoom);ctx.translate(-t.x,-t.y);
-const drawCopies=(obj,fn)=>{for(let ix=-1;ix<=1;ix++)for(let iy=-1;iy<=1;iy++){const x=obj.x+ix*map.w,y=obj.y+iy*map.h;if(Math.abs(x-t.x)>w/zoom*.7+100||Math.abs(y-t.y)>h/zoom*.7+100)continue;fn(x,y);}};
+const drawCopies=(obj,fn)=>{for(let ix=-1;ix<=1;ix++)for(let iy=-1;iy<=1;iy++){const x=obj.x+ix*map.w,y=obj.y+iy*map.h;if(Math.abs(x-t.x)>w/(2*zoom)+170||Math.abs(y-t.y)>h/(2*zoom)+170)continue;fn(x,y);}};
 // terrain grid is periodic
 ctx.strokeStyle='#abc6a71e';ctx.lineWidth=1;for(let x=0;x<map.w;x+=100)drawCopies({x,y:t.y},(xx)=>{ctx.beginPath();ctx.moveTo(xx,t.y-h/zoom);ctx.lineTo(xx,t.y+h/zoom);ctx.stroke();});for(let y=0;y<map.h;y+=100)drawCopies({x:t.x,y},(_,yy)=>{ctx.beginPath();ctx.moveTo(t.x-w/zoom,yy);ctx.lineTo(t.x+w/zoom,yy);ctx.stroke();});
 for(const o of state.obstacles)drawCopies(o,(x,y)=>{ctx.fillStyle=o.type==='rock'?'#737970':o.type==='concrete'?'#908a78':'#a28a62';ctx.strokeStyle='#333e35';ctx.lineWidth=3;ctx.beginPath();ctx.rect(x-o.r,y-o.r,o.r*2,o.r*2);ctx.fill();ctx.stroke();if(o.type==='wood'){ctx.beginPath();ctx.moveTo(x-o.r,y-o.r);ctx.lineTo(x+o.r,y+o.r);ctx.moveTo(x+o.r,y-o.r);ctx.lineTo(x-o.r,y+o.r);ctx.stroke();}});
