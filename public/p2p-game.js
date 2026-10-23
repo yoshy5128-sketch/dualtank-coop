@@ -219,7 +219,7 @@ if(role==='gunner'&&drag){
  ctx.textAlign='left';
 }
 
-$('leftInfo').innerHTML=`🚙 ${role==='driver'?'操縦手':'砲手'} | 装甲 ${Math.ceil(t.hp)}/${t.maxHp}<br>AP ${t.ammoAP} / HE ${t.ammoHE} | ${t.shell} ${t.reload>0?'装填中': '✅ 発射可能'}`;$('rightInfo').innerHTML=`WAVE ${state.wave} | 撃破 ${state.kills} | 敵 ${state.enemies.length}<br><span style="color:#dfcb82">${state.players.driver?'●':'○'}操縦手 ${state.players.gunner?'●':'○'}砲手</span>`;
+$('leftInfo').innerHTML=`🚙 ${role==='driver'?'操縦手':'砲手'} | 装甲 ${Math.ceil(t.hp)}/${t.maxHp}<br>AP ${t.ammoAP} / HE ${t.ammoHE} | ${t.shell} ${t.reload>0?'装填中': '✅ 発射可能'}`;$('rightInfo').innerHTML=`WAVE ${state.wave} | 撃破 ${state.kills} | 敵 ${state.enemies.length}<br><span style="color:#dfcb82">${role==='driver'?(state.players.driver?'●':'○')+'操縦手':(state.players.gunner?'●':'○')+'砲手'}</span>`;
 if(t.hp<=0){box(0,h*.42,w,h*.2,'#08150ce8');ctx.fillStyle='#fff4de';ctx.font='bold 27px system-ui';ctx.textAlign='center';ctx.fillText('戦車撃破 - GAME OVER',w/2,h*.51);ctx.font='14px system-ui';ctx.fillText('PC: Rで再挑戦',w/2,h*.57);ctx.textAlign='left';}}
 setInterval(()=>{if(!joined)return;if(role==='driver'){const drive=Math.max(-1,Math.min(1,(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0)+(touchDevice?(reverseHeld?-throttleValue:throttleValue):-joy.y)));const turn=Math.max(-1,Math.min(1,(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0)+(touchDevice?buttonTurn:joy.x)));sendInput({type:'input',drive,turn});}else{sendInput({type:'input',aim,shotId,shell});}},50);
 
