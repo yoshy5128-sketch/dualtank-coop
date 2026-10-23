@@ -300,7 +300,11 @@ function pickTacticalPoint(e,t,room){
 }
 function steerAI(e,t,room,dt){
  const dx=delta(t.x,e.x,W),dy=delta(t.y,e.y,H),dist=Math.hypot(dx,dy),target=Math.atan2(dy,dx);
- const canSeeTarget=!segmentObstructed(e.x,e.y,t.x,t.y,room.obstacles,7);
+ if(room.elapsed >= (e.nextSightAt||0)){
+  e.cachedSight=!segmentObstructed(e.x,e.y,t.x,t.y,room.obstacles,7);
+  e.nextSightAt=room.elapsed+0.18+(e.id%4)*0.022;
+ }
+ const canSeeTarget=!!e.cachedSight;
  if(canSeeTarget){e.lastSeen={x:t.x,y:t.y,a:t.a};e.lastSeenAt=room.elapsed;}
  const hasMemory=room.elapsed-e.lastSeenAt<7;
  // Enemies do not continually pursue a target they cannot see indefinitely.
@@ -332,9 +336,9 @@ function steerAI(e,t,room,dt){
   const obstructed=segmentObstructed(e.x,e.y,goal.x,goal.y,room.obstacles,e.r+7);
   if(obstructed){
    const goalCell=navIndex(goal.x,goal.y),count=room.obstacles.length;
-   if((room.elapsed>=e.navAt||e.navTarget!==goalCell||e.navObstacleCount!==count)&&room.navBudget>0){
+   if(room.elapsed>=e.navAt&&room.navBudget>0){
     room.navBudget--;e.navPath=findNavPath(e,goal,room);
-    e.navAt=room.elapsed+rand(1.25,2.0);e.navTarget=goalCell;e.navObstacleCount=count;
+    e.navAt=room.elapsed+rand(2.8,4.2);e.navTarget=goalCell;e.navObstacleCount=count;
    }
    while(e.navPath.length>1&&!segmentObstructed(e.x,e.y,e.navPath[1].x,e.navPath[1].y,room.obstacles,e.r+7))e.navPath.shift();
    if(e.navPath.length&&distance(e,e.navPath[0])<Math.max(19,e.r))e.navPath.shift();
@@ -387,7 +391,7 @@ function steerAI(e,t,room,dt){
  return {target:turretTarget,dist,canSeeTarget};
 }
 function step(room,dt){room.elapsed+=dt;
- room.navBudget=2;const obstacleRevision=room.obstacles.length;
+ room.navBudget=(Math.floor(room.elapsed/TICK)%3===0)?1:0;const obstacleRevision=room.obstacles.length;
  if(room.navCacheRevision!==obstacleRevision){room.navCache=null;room.navCacheRevision=obstacleRevision;}
 const t=room.tank;if(!room.clients.driver&&!room.clients.gunner)return;
  if(t.hp>0){const d=room.inputs.driver,g=room.inputs.gunner;
@@ -444,8 +448,8 @@ separateTanks(room);
 room.bullets=room.bullets.filter(b=>b.life>0);room.enemies=room.enemies.filter(e=>e.hp>0);room.obstacles=room.obstacles.filter(o=>o.hp>0);for(const c of room.crates){if(distance(t,c)<42){t.ammoAP=Math.min(70,t.ammoAP+Math.ceil(c.ammo*.7));t.ammoHE=Math.min(30,t.ammoHE+Math.floor(c.ammo*.3));t.ammo=t.ammoAP+t.ammoHE;c.picked=true;}}room.crates=room.crates.filter(c=>!c.picked);
 if(room.crates.length<3&&Math.random()<dt*.065)room.crates.push({id:room.crateId++,x:rand(50,W-50),y:rand(50,H-50),ammo:10});
 }
-function state(room){return {type:'state',tank:room.tank,enemies:room.enemies,bullets:room.bullets,effects:room.effects,popups:room.popups,obstacles:room.obstacles,crates:room.crates,wave:room.wave,kills:room.kills,players:{driver:!!room.clients.driver,gunner:!!room.clients.gunner},map:{w:W,h:H}};}
-setInterval(()=>{for(const [code,room] of rooms){if(Date.now()-room.lastActivity>1000*60*15){rooms.delete(code);continue;}step(room,TICK);broadcast(room,state(room));}},1000/30);
+function state(room){return {type:'state',tank:room.tank,enemies:room.enemies.map(e=>({id:e.id,x:e.x,y:e.y,a:e.a,turret:e.turret,type:e.type,r:e.r,hp:e.hp,maxHp:e.maxHp})),bullets:room.bullets,effects:room.effects,popups:room.popups,obstacles:room.obstacles,crates:room.crates,wave:room.wave,kills:room.kills,players:{driver:!!room.clients.driver,gunner:!!room.clients.gunner},map:{w:W,h:H}};}
+setInterval(()=>{for(const [code,room] of rooms){if(Date.now()-room.lastActivity>1000*60*15){rooms.delete(code);continue;}step(room,TICK);room.netTick=(room.netTick||0)+1;if(room.netTick%3!==0)broadcast(room,state(room));}},1000/30);
 wss.on('connection',ws=>{let room=null,role=null;ws.on('message',raw=>{let m;try{m=JSON.parse(raw.toString());}catch{return;}if(m.type==='join'){const code=String(m.code||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);if(code.length<4){send(ws,{type:'error',message:'部屋番号は4〜6文字で入力してください'});return;}if(room)return;let r=rooms.get(code);if(!r){r=makeRoom(code);rooms.set(code,r);}let desired=m.role==='gunner'?'gunner':'driver';if(r.clients[desired]){send(ws,{type:'error',message:'その役割は使用中です。別の役割か部屋番号を選んでください。'});return;}r.clients[desired]=ws;room=r;role=desired;r.lastActivity=Date.now();send(ws,{type:'joined',code,role});broadcast(r,{type:'presence',players:{driver:!!r.clients.driver,gunner:!!r.clients.gunner}});return;}if(!room)return;room.lastActivity=Date.now();if(m.type==='input'){if(role==='driver'){room.inputs.driver={drive:clamp(Number(m.drive)||0,-1,1),turn:clamp(Number(m.turn)||0,-1,1)};}else{room.inputs.gunner.aim=Number.isFinite(Number(m.aim))?Number(m.aim):room.tank.turret;
  if((m.shell==='AP'||m.shell==='HE')&&m.shell!==room.tank.shell){room.tank.shell=m.shell;room.tank.reload=Math.max(room.tank.reload,room.tank.reloadDuration*.8);}if(Number.isInteger(m.shotId)&&m.shotId>0&&m.shotId!==ws.lastShotId){ws.lastShotId=m.shotId;room.inputs.gunner.shot=1;}}}if(m.type==='restart'&&room.tank.hp<=0){let players=room.clients;let next=makeRoom(room.code);Object.assign(room,next);room.clients=players;broadcast(room,{type:'restarted'});}});ws.on('close',()=>{let actual=ws.currentRoom||room;if(actual&&role&&actual.clients[role]===ws){actual.clients[role]=null;actual.inputs[role]=role==='driver'?{drive:0,turn:0}:{aim:actual.tank.turret,shot:0};broadcast(actual,{type:'presence',players:{driver:!!actual.clients.driver,gunner:!!actual.clients.gunner}});}});});
 server.listen(PORT,()=>console.log(`DUAL TANK online on port ${PORT}`));
