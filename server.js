@@ -16,7 +16,7 @@ const server = http.createServer((req,res)=>{
   if (!file.startsWith(root+path.sep)) {res.writeHead(403).end();return;}
   fs.readFile(file,(e,data)=>{if(e){res.writeHead(404).end('Not found');return;}res.writeHead(200,{'Content-Type':mime[path.extname(file)]||'application/octet-stream'}).end(data);});
 });
-const wss = new WebSocketServer({server});
+const wss = new WebSocketServer({noServer:true});
 const rand=(a,b)=>a+Math.random()*(b-a);
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const wrap=(v,max)=>(v%max+max)%max;
@@ -453,3 +453,41 @@ setInterval(()=>{for(const [code,room] of rooms){if(Date.now()-room.lastActivity
 wss.on('connection',ws=>{let room=null,role=null;ws.on('message',raw=>{let m;try{m=JSON.parse(raw.toString());}catch{return;}if(m.type==='join'){const code=String(m.code||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);if(code.length<4){send(ws,{type:'error',message:'部屋番号は4〜6文字で入力してください'});return;}if(room)return;let r=rooms.get(code);if(!r){r=makeRoom(code);rooms.set(code,r);}let desired=m.role==='gunner'?'gunner':'driver';if(r.clients[desired]){send(ws,{type:'error',message:'その役割は使用中です。別の役割か部屋番号を選んでください。'});return;}r.clients[desired]=ws;room=r;role=desired;r.lastActivity=Date.now();send(ws,{type:'joined',code,role});broadcast(r,{type:'presence',players:{driver:!!r.clients.driver,gunner:!!r.clients.gunner}});return;}if(!room)return;room.lastActivity=Date.now();if(m.type==='input'){if(role==='driver'){room.inputs.driver={drive:clamp(Number(m.drive)||0,-1,1),turn:clamp(Number(m.turn)||0,-1,1)};}else{room.inputs.gunner.aim=Number.isFinite(Number(m.aim))?Number(m.aim):room.tank.turret;
  if((m.shell==='AP'||m.shell==='HE')&&m.shell!==room.tank.shell){room.tank.shell=m.shell;room.tank.reload=Math.max(room.tank.reload,room.tank.reloadDuration*.8);}if(Number.isInteger(m.shotId)&&m.shotId>0&&m.shotId!==ws.lastShotId){ws.lastShotId=m.shotId;room.inputs.gunner.shot=1;}}}if(m.type==='restart'&&room.tank.hp<=0){let players=room.clients;let next=makeRoom(room.code);Object.assign(room,next);room.clients=players;broadcast(room,{type:'restarted'});}});ws.on('close',()=>{let actual=ws.currentRoom||room;if(actual&&role&&actual.clients[role]===ws){actual.clients[role]=null;actual.inputs[role]=role==='driver'?{drive:0,turn:0}:{aim:actual.tank.turret,shot:0};broadcast(actual,{type:'presence',players:{driver:!!actual.clients.driver,gunner:!!actual.clients.gunner}});}});});
 server.listen(PORT,()=>console.log(`DUAL TANK online on port ${PORT}`));
+
+// v0.4 P2P signaling ONLY: game states and controls never pass through Render.
+const signalWss=new WebSocketServer({noServer:true});
+const signalRooms=new Map();
+function signalSend(ws,msg){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(msg));}
+signalWss.on('connection',ws=>{
+ let code=null,role=null;
+ ws.on('message',raw=>{
+  let m;try{m=JSON.parse(raw.toString());}catch{return;}
+  if(m.type==='join'){
+   const newCode=String(m.code||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);
+   const newRole=m.role==='driver'?'driver':m.role==='gunner'?'gunner':null;
+   if(code||newCode.length<4||!newRole){signalSend(ws,{type:'error',message:'部屋番号または役割が不正です'});return;}
+   const peers=signalRooms.get(newCode)||{};
+   if(peers[newRole]){signalSend(ws,{type:'error',message:'この役割は既に入室済みです'});return;}
+   code=newCode;role=newRole;peers[role]=ws;signalRooms.set(code,peers);
+   signalSend(ws,{type:'joined',role,code});
+   if(peers.driver&&peers.gunner){signalSend(peers.driver,{type:'ready'});signalSend(peers.gunner,{type:'ready'});}
+  } else if(code&&['offer','answer','ice'].includes(m.type)){
+   const other=signalRooms.get(code)?.[role==='driver'?'gunner':'driver'];
+   if(other&&JSON.stringify(m).length<24000)signalSend(other,m);
+  }
+ });
+ ws.on('close',()=>{
+  if(!code)return;
+  const peers=signalRooms.get(code);if(!peers||peers[role]!==ws)return;
+  delete peers[role];signalSend(peers[role==='driver'?'gunner':'driver'],{type:'peer-left'});
+  if(!peers.driver&&!peers.gunner)signalRooms.delete(code);
+ });
+});
+
+// Route upgrades explicitly; separate WebSocketServer listeners would reject each other's URLs.
+server.on('upgrade',(req,socket,head)=>{
+ let pathname;try{pathname=new URL(req.url,'http://localhost').pathname;}catch{socket.destroy();return;}
+ const target=pathname==='/legacy'?wss:pathname==='/p2p-signal'?signalWss:null;
+ if(!target){socket.destroy();return;}
+ target.handleUpgrade(req,socket,head,ws=>target.emit('connection',ws,req));
+});
