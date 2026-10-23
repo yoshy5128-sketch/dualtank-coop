@@ -18,7 +18,52 @@ canvas.addEventListener('pointerup',e=>{if(!drag||drag.id!==e.pointerId)return;
 canvas.addEventListener('pointercancel',()=>{drag=null;});
 function stick(id,knob,fn){let el=$(id);el.addEventListener('pointerdown',e=>{el.setPointerCapture(e.pointerId);update(e);});el.addEventListener('pointermove',e=>{if(el.hasPointerCapture(e.pointerId))update(e);});for(let ev of ['pointerup','pointercancel'])el.addEventListener(ev,()=>{fn(0,0);$(knob).style.transform='translate(0px,0px)';});function update(e){let r=el.getBoundingClientRect(),dx=e.clientX-(r.left+r.width/2),dy=e.clientY-(r.top+r.height/2),mag=Math.hypot(dx,dy),lim=r.width*.34;if(mag>lim){dx*=lim/mag;dy*=lim/mag;}$(knob).style.transform=`translate(${dx}px,${dy}px)`;fn(dx/lim,dy/lim);}}stick('stickArea','knob',(x,y)=>{joy={x,y};});
 const delta=(a,b,n)=>{let d=a-b;return d-Math.round(d/n)*n};function resize(){let d=devicePixelRatio||1;canvas.width=Math.round(innerWidth*d);canvas.height=Math.round(innerHeight*d);ctx.setTransform(d,0,0,d,0,0);}window.addEventListener('resize',resize);resize();
-function box(x,y,w,h,color){ctx.fillStyle=color;ctx.fillRect(x,y,w,h);}function tank(x,y,a,turret,color,scale=1){ctx.save();ctx.translate(x,y);ctx.rotate(a);ctx.scale(scale,scale);box(-20,-13,40,26,'#1b2520');box(-16,-16,9,32,'#303a32');box(7,-16,9,32,'#303a32');box(-17,-11,34,22,color);box(-8,-7,15,14,'#a2b29555');ctx.restore();ctx.save();ctx.translate(x,y);ctx.rotate(turret);box(0,-4,27,8,'#d6cc9b');ctx.beginPath();ctx.arc(0,0,10*scale,0,PI);ctx.fillStyle=color;ctx.fill();ctx.restore();}
+function box(x,y,w,h,color){ctx.fillStyle=color;ctx.fillRect(x,y,w,h);}
+const TANK_ART_SOURCES={
+ player:{hull:'/assets/tanks/player_hull.png',turret:'/assets/tanks/player_turret.png',fallback:'#b4c98e'},
+ normal:{hull:'/assets/tanks/player_hull.png',turret:'/assets/tanks/player_turret.png',fallback:'#9dac89'},
+ scout:{hull:'/assets/tanks/scout_hull.png',turret:'/assets/tanks/scout_turret.png',fallback:'#c98f50'},
+ heavy:{hull:'/assets/tanks/heavy_hull.png',turret:'/assets/tanks/heavy_turret.png',fallback:'#8b3832'},
+ sniper:{hull:'/assets/tanks/sniper_hull.png',turret:'/assets/tanks/sniper_turret.png',fallback:'#b85943'}
+};
+function bootTankArt(){
+ const variants={};
+ for(const [key,srcs] of Object.entries(TANK_ART_SOURCES)){
+  const hull=new Image(), turret=new Image();
+  hull.decoding='async'; turret.decoding='async';
+  hull.src=srcs.hull; turret.src=srcs.turret;
+  variants[key]={hull,turret,fallback:srcs.fallback};
+ }
+ return {variants};
+}
+const tankArt=bootTankArt();
+function drawFallbackTank(x,y,a,turret,color,scale=1){
+ ctx.save();ctx.translate(x,y);ctx.rotate(a);ctx.scale(scale,scale);
+ box(-20,-13,40,26,'#1b2520');box(-16,-16,9,32,'#303a32');box(7,-16,9,32,'#303a32');
+ box(-17,-11,34,22,color);box(-8,-7,15,14,'#a2b29555');
+ // extra front/back details for readability
+ box(12,-6,4,12,'#d4ddba66');box(-15,-9,4,18,'#223026bb');
+ ctx.restore();
+ ctx.save();ctx.translate(x,y);ctx.rotate(turret);
+ box(0,-4,27,8,'#d6cc9b');ctx.beginPath();ctx.arc(0,0,10*scale,0,PI);ctx.fillStyle=color;ctx.fill();ctx.restore();
+}
+function tank(x,y,a,turret,variant='player',radius=24){
+ const art=tankArt.variants[variant]||tankArt.variants.player;
+ const hull=art?.hull,tur=art?.turret;
+ const loaded=hull&&tur&&hull.complete&&tur.complete&&hull.naturalWidth&&tur.naturalWidth;
+ if(!loaded){drawFallbackTank(x,y,a,turret,art?.fallback||'#b4c98e',Math.max(.78,radius/20));return;}
+ const s=(radius*2.9)/Math.max(1,hull.naturalHeight);
+ ctx.save();ctx.translate(x,y);ctx.rotate(a-Math.PI/2);
+ ctx.drawImage(hull,-hull.naturalWidth*s/2,-hull.naturalHeight*s/2,hull.naturalWidth*s,hull.naturalHeight*s);
+ ctx.restore();
+ ctx.save();ctx.translate(x,y);ctx.rotate(turret-Math.PI/2);
+ ctx.drawImage(tur,-tur.naturalWidth*s/2,-tur.naturalHeight*s/2,tur.naturalWidth*s,tur.naturalHeight*s);
+ ctx.restore();
+ if(variant==='player'){
+  ctx.beginPath();ctx.arc(x,y,radius+3,0,PI);ctx.strokeStyle='rgba(214,239,190,.35)';ctx.lineWidth=1.3;ctx.stroke();
+ }
+}
+
 function render(){
  requestAnimationFrame(render);
  const now=performance.now(),dt=visualFrameAt?Math.min(.08,(now-visualFrameAt)/1000):1/60;
@@ -42,7 +87,7 @@ for(const e of state.enemies){
   v.a+=Math.atan2(Math.sin(e.a-v.a),Math.cos(e.a-v.a))*blend;
   v.turret+=Math.atan2(Math.sin(e.turret-v.turret),Math.cos(e.turret-v.turret))*blend;
  }
- drawCopies({...e,x:v.x,y:v.y},(x,y)=>{tank(x,y,v.a,v.turret,e.type==='scout'?'#c98f50':e.type==='heavy'?'#8b3832':e.type==='sniper'?'#b85943':'#b87a59',e.r/18);box(x-19,y-e.r-17,38,4,'#422727');box(x-19,y-e.r-17,38*e.hp/e.maxHp,4,'#e4ad75');});
+ drawCopies({...e,x:v.x,y:v.y},(x,y)=>{tank(x,y,v.a,v.turret,e.type,e.r);box(x-19,y-e.r-17,38,4,'#422727');box(x-19,y-e.r-17,38*e.hp/e.maxHp,4,'#e4ad75');});
 }
 for(const id of visualEnemies.keys())if(!liveIds.has(id))visualEnemies.delete(id);
 for(const f of state.effects||[])drawCopies(f,(x,y)=>{ctx.beginPath();ctx.arc(x,y,f.kind==='explosion'?22:8,0,PI);ctx.strokeStyle=f.kind==='penetrated'?'#fa3e39':f.kind==='ricochet'?'#eef5cb':'#e9b24c';ctx.lineWidth=3;ctx.globalAlpha=Math.max(.15,Math.min(1,f.life*2));ctx.stroke();ctx.globalAlpha=1;});
@@ -59,7 +104,7 @@ for(const p of state.popups||[])drawCopies(p,(x,y)=>{
  ctx.globalAlpha=1;ctx.textAlign='left';
 });
 drawCopies(t,(x,y)=>{
- tank(x,y,t.a,t.turret,'#b4c98e',1.2);
+ tank(x,y,t.a,t.turret,'player',t.r);
  // Compact HP bar above tank. Reload is shown ONLY through the aiming line.
  const hpRatio=Math.max(0,Math.min(1,t.hp/Math.max(1,t.maxHp)));
  const hpColor=hpRatio>.5?'#65ed86':hpRatio>.25?'#f5cd60':'#ff615a';
