@@ -5,7 +5,7 @@ function selectShell(v){shell=v;$('shellAP').classList.toggle('active',v==='AP')
 $('driver').onclick=()=>choose('driver');$('gunner').onclick=()=>choose('gunner');function choose(r){role=r;$('driver').classList.toggle('active',r==='driver');$('gunner').classList.toggle('active',r==='gunner');}
 const touchDevice=matchMedia('(pointer: coarse)').matches;
 let viewScale=1;
-const activeTouches=new Map();let pinch=null,turnTouch=null,turnValue=0,throttleValue=0,direction=1;
+const activeTouches=new Map();let pinch=null,turnTouch=null,turnValue=0,throttleValue=0,reverseHeld=false,steeringMode='slide',buttonTurn=0;
 const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
 function updateZoom(next){viewScale=clamp(next,0.48,1.55);const label=$('zoomLabel');label.textContent=`画角 ${Math.round(viewScale*100)}%`;}
 canvas.addEventListener('wheel',e=>{if(!joined)return;e.preventDefault();updateZoom(viewScale*Math.exp(-e.deltaY*.0013));},{passive:false});
@@ -15,7 +15,27 @@ canvas.addEventListener('pointermove',e=>{if(!activeTouches.has(e.pointerId))ret
 function endTouch(e){activeTouches.delete(e.pointerId);if(activeTouches.size<2)pinch=null;}
 canvas.addEventListener('pointerup',endTouch);canvas.addEventListener('pointercancel',endTouch);
 $('throttle').addEventListener('input',e=>{throttleValue=Number(e.target.value)/100;$('throttleLabel').textContent=`速度 ${Math.round(throttleValue*100)}%`;});
-$('direction').onclick=()=>{direction*=-1;$('direction').textContent=direction>0?'▲ 前進':'▼ 後退';};
+// Hold-to-reverse: never latch, and reset if touch is cancelled or app loses focus.
+const reverse=$('reverse');
+function setReverse(v){reverseHeld=v;reverse.classList.toggle('pressed',v);reverse.setAttribute('aria-pressed',String(v));}
+reverse.addEventListener('pointerdown',e=>{reverse.setPointerCapture(e.pointerId);setReverse(true);e.preventDefault();});
+for(const ev of ['pointerup','pointercancel','lostpointercapture'])reverse.addEventListener(ev,()=>setReverse(false));
+window.addEventListener('blur',()=>{setReverse(false);buttonTurn=0;});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){setReverse(false);buttonTurn=0;}});
+for(const [id,sign] of [['turnLeft',-1],['turnRight',1]]){
+ const btn=$(id);
+ btn.addEventListener('pointerdown',e=>{btn.setPointerCapture(e.pointerId);buttonTurn=sign;btn.classList.add('pressed');e.preventDefault();});
+ for(const ev of ['pointerup','pointercancel','lostpointercapture'])btn.addEventListener(ev,()=>{if(buttonTurn===sign)buttonTurn=0;btn.classList.remove('pressed');});
+}
+function updateSteerMode(){
+ const buttons=steeringMode==='buttons';
+ $('steerZone').style.display=joined&&role==='driver'&&touchDevice&&!buttons?'block':'none';
+ $('turnButtons').style.display=joined&&role==='driver'&&touchDevice&&buttons?'flex':'none';
+ turnValue=0;buttonTurn=0;
+}
+for(const radio of document.querySelectorAll('input[name="steering"]'))radio.addEventListener('change',()=>{if(radio.checked){steeringMode=radio.value;updateSteerMode();}});
+$('settingsButton').onclick=()=>{$('settingsOverlay').style.display='flex';turnValue=0;buttonTurn=0;};
+$('closeSettings').onclick=()=>{$('settingsOverlay').style.display='none';};
 const steer=$('steerZone');
 steer.addEventListener('pointerdown',e=>{if(!joined||role!=='driver')return;turnTouch={id:e.pointerId,start:e.clientX};steer.setPointerCapture(e.pointerId);e.preventDefault();});
 steer.addEventListener('pointermove',e=>{if(!turnTouch||turnTouch.id!==e.pointerId)return;turnValue=clamp((e.clientX-turnTouch.start)/Math.max(55,innerWidth*.15),-1,1);$('steerGuide').textContent=turnValue>.08?'右旋回 →':turnValue<-.08?'← 左旋回':'左右スライドで旋回 ↔';e.preventDefault();});
@@ -25,10 +45,10 @@ let signal=null,peer=null,channel=null,game=null,host=false,netOk=false,netCode=
 const note=msg=>{$('msg').textContent=msg; if(joined)$('hint').textContent=msg;};
 function showGame(){
  joined=true;$('menu').style.display='none';$('hud').style.display='flex';$('fs').style.display='block';$('hint').style.display='block';
- $('steerZone').style.display=role==='driver'&&touchDevice?'block':'none';
+ updateSteerMode();
  $('throttlePanel').style.display=role==='driver'&&touchDevice?'flex':'none';
- $('zoomLabel').style.display='block';$('shellPicker').style.display=role==='gunner'?'flex':'none';
- $('hint').textContent=role==='driver'?'操縦手：左で旋回／右でアクセル・前後切替':'砲手：自機からドラッグして射撃';
+ $('settingsButton').style.display=role==='driver'&&touchDevice?'block':'none';$('zoomLabel').style.display='block';$('shellPicker').style.display=role==='gunner'?'flex':'none';
+ $('hint').textContent=role==='driver'?'操縦手：旋回／アクセル／R長押しで後退':'砲手：自機からドラッグして射撃';
 }
 function wirePeer(){
  peer=new RTCPeerConnection({iceServers:[]});
@@ -87,7 +107,8 @@ function sendInput(m){
  if(host){if(m.type==='input')changeDriver(game,m.drive,m.turn);else if(m.type==='restart'&&game.tank.hp<=0){game=restartGame(game);state=gameSnapshot(game);}}
  else if(netOk&&channel?.readyState==='open')channel.send(JSON.stringify(m));
 }
-$('fs').onclick=()=>{if(!document.fullscreenElement)document.documentElement.requestFullscreen?.().catch(()=>{});else document.exitFullscreen?.();};window.addEventListener('keydown',e=>{keys[e.code]=true;if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();if(e.code==='KeyR'&&state?.tank.hp<=0)sendInput({type:'restart'});});window.addEventListener('keyup',e=>keys[e.code]=false);// Aim gesture starts only near the player tank. Releasing fires one round.
+$('fs').onclick=async()=>{try{if(!document.fullscreenElement){if(document.documentElement.requestFullscreen)await document.documentElement.requestFullscreen();else note('このブラウザは全画面表示に対応していません');}else await document.exitFullscreen();}catch{note('全画面にできません。ブラウザの全画面機能をお試しください');}};
+document.addEventListener('fullscreenchange',()=>{$('fs').textContent=document.fullscreenElement?'⛶ 全画面解除':'⛶ 全画面';});window.addEventListener('keydown',e=>{keys[e.code]=true;if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();if(e.code==='KeyR'&&state?.tank.hp<=0)sendInput({type:'restart'});});window.addEventListener('keyup',e=>keys[e.code]=false);// Aim gesture starts only near the player tank. Releasing fires one round.
 function worldAim(e){if(!state)return;const dx=e.clientX-innerWidth/2,dy=e.clientY-innerHeight/2;if(Math.hypot(dx,dy)>14)aim=Math.atan2(dy,dx);}
 canvas.addEventListener('pointerdown',e=>{if(role!=='gunner'||!joined||!state||state.tank.hp<=0||activeTouches.size>=2)return;
  const dx=e.clientX-innerWidth/2,dy=e.clientY-innerHeight/2;
@@ -176,7 +197,7 @@ if(role==='gunner'&&drag){
 
 $('leftInfo').innerHTML=`🚙 ${role==='driver'?'操縦手':'砲手'} | 装甲 ${Math.ceil(t.hp)}/${t.maxHp}<br>AP ${t.ammoAP} / HE ${t.ammoHE} | ${t.shell} ${t.reload>0?'装填中': '✅ 発射可能'}`;$('rightInfo').innerHTML=`WAVE ${state.wave} | 撃破 ${state.kills} | 敵 ${state.enemies.length}<br><span style="color:#dfcb82">${state.players.driver?'●':'○'}操縦手 ${state.players.gunner?'●':'○'}砲手</span>`;
 if(t.hp<=0){box(0,h*.42,w,h*.2,'#08150ce8');ctx.fillStyle='#fff4de';ctx.font='bold 27px system-ui';ctx.textAlign='center';ctx.fillText('戦車撃破 - GAME OVER',w/2,h*.51);ctx.font='14px system-ui';ctx.fillText('PC: Rで再挑戦',w/2,h*.57);ctx.textAlign='left';}}
-setInterval(()=>{if(!joined)return;if(role==='driver'){const drive=Math.max(-1,Math.min(1,(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0)-(touchDevice?direction*throttleValue:joy.y)));const turn=Math.max(-1,Math.min(1,(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0)+(touchDevice?turnValue:joy.x)));sendInput({type:'input',drive,turn});}else{sendInput({type:'input',aim,shotId,shell});}},50);
+setInterval(()=>{if(!joined)return;if(role==='driver'){const drive=Math.max(-1,Math.min(1,(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0)+(touchDevice?(reverseHeld?-throttleValue:throttleValue):-joy.y)));const turn=Math.max(-1,Math.min(1,(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0)+(touchDevice?(steeringMode==='buttons'?buttonTurn:turnValue):joy.x)));sendInput({type:'input',drive,turn});}else{sendInput({type:'input',aim,shotId,shell});}},50);
 
 // Start the animation loop once at initialization.
 render();
