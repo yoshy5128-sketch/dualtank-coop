@@ -35,6 +35,33 @@ $('settingsButton').onclick=()=>{$('settingsOverlay').style.display='flex';butto
 $('closeSettings').onclick=()=>{$('settingsOverlay').style.display='none';};
 let signal=null,peer=null,channel=null,game=null,host=false,netOk=false,netCode='',timer=null;
 const note=msg=>{$('msg').textContent=msg; if(joined)$('hint').textContent=msg;};
+// The host owns the authoritative simulation; both roles can request a reset.
+let lastResetAt=0;
+function resetLocalControls(){
+ shotId=0;drag=null;aim=0;shell='AP';$('shellAP').classList.add('active');$('shellHE').classList.remove('active');
+ keys={};buttonTurn=0;turnValue=0;throttleValue=0;reverseHeld=false;
+ $('throttle').value='0';$('throttleLabel').textContent='速度 0%';
+ $('reverse').classList.remove('pressed');$('turnLeft').classList.remove('pressed');$('turnRight').classList.remove('pressed');
+ visualEnemies.clear();lastSend=0;
+}
+function applyFreshGame(){
+ if(!host)return;
+ game=restartGame(game);
+ state=gameSnapshot(game);
+ resetLocalControls();
+ if(channel?.readyState==='open')channel.send(JSON.stringify({type:'match-reset',state}));
+ note('新しい対戦を開始しました');
+}
+function requestReset(){
+ if(!joined)return;
+ if(!window.confirm('2人ともWAVE 1・HP満タン・初期弾薬からやり直します。よろしいですか？'))return;
+ $('settingsOverlay').style.display='none';
+ if(host)applyFreshGame();
+ else if(channel?.readyState==='open')channel.send(JSON.stringify({type:'reset-request'}));
+ else note('相手と接続してからリセットしてください');
+}
+$('resetMatch').onclick=requestReset;
+
 function showGame(){
  joined=true;$('menu').style.display='none';$('hud').style.display='flex';$('fs').style.display='block';$('hint').style.display='block';
  showSteeringButtons();
@@ -54,8 +81,13 @@ function wireData(){
  channel.onclose=()=>{netOk=false;note('P2P通信が切断されました');};
  channel.onmessage=e=>{
   let m;try{m=JSON.parse(e.data);}catch{return;}
-  if(host){if(m.type==='input'&&role==='driver')changeGunner(game,m.aim,m.shotId,m.shell);}
-  else if(m.type==='state'){state=m;}
+  if(host){
+   if(m.type==='reset-request')applyFreshGame();
+   else if(m.type==='input'&&role==='driver')changeGunner(game,m.aim,m.shotId,m.shell);
+  }else{
+   if(m.type==='match-reset'){state=m.state;resetLocalControls();$('settingsOverlay').style.display='none';note('相手が新しい対戦を開始しました');}
+   else if(m.type==='state'){state=m;}
+  }
  };
 }
 function sendSignal(m){if(signal?.readyState===1)signal.send(JSON.stringify(m));}
