@@ -48,7 +48,7 @@ function spawnWave(room){
    type:c.type,hp:c.hp,maxHp:c.hp,damage:c.damage,reload:c.reload,heStock:(c.type==='scout'?0:2),
    cooldown:rand(0,3),range:c.range,r:c.r,speed:c.speed,velocity:0,
    aiMode:'approach',reverseUntil:0,stuckFor:0,lastX:p.x,lastY:p.y,
-   routeAngle:0,routeUntil:0,avoidSide:Math.random()<.5?1:-1,navPath:[],navAt:0,navTarget:-1,navObstacleCount:0,stuckAttempts:0,navBlockedFor:0});
+   routeAngle:0,routeUntil:0,tactic:'hold',tacticUntil:0,tacticPoint:null,tacticNext:0,lastSeen:{x:W/2,y:H/2,a:0},lastSeenAt:room.elapsed,coverSide:Math.random()<.5?1:-1,preferredRange:c.range*(c.type==='scout'?.66:c.type==='sniper'?.83:.75),avoidSide:Math.random()<.5?1:-1,navPath:[],navAt:0,navTarget:-1,navObstacleCount:0,stuckAttempts:0,navBlockedFor:0});
  }
  room.spawnTimer=4;
 }
@@ -253,53 +253,128 @@ function findNavPath(e,t,room){
  while(cur!==start&&indices.length<blocked.length){indices.push(cur);cur=previous[cur];if(cur<0)return [];}
  indices.reverse();return indices.map(navCenter);
 }
+// Tactical position scoring runs infrequently per enemy. It is separate from movement,
+// so pathfinding remains staggered and never runs for every candidate/each tick.
+function clearTacticalPoint(e,p,room){return !collideOb(p.x,p.y,e.r+9,room.obstacles) &&
+ !room.enemies.some(o=>o!==e&&o.hp>0&&distance(p,o)<e.r+o.r+16);}
+// Each enemy owns a different combat sector. Positions are chosen around the
+// target's hull orientation, not within a narrow arc toward its current approach.
+function tacticalSector(e,room){
+ const active=room.enemies.filter(other=>other.hp>0).sort((a,b)=>a.id-b.id);
+ const index=active.indexOf(e);
+ const sectors=[Math.PI,Math.PI*.54,-Math.PI*.54,0];
+ return {index, angle:sectors[Math.max(0,index)%sectors.length], count:active.length};
+}
+function pickTacticalPoint(e,t,room){
+ const last=e.lastSeen;
+ if(!last||room.elapsed-e.lastSeenAt>7)return null;
+ const {index,angle:sector}=tacticalSector(e,room);
+ // Positions at 60-90% of firing range; defenders never select a near-contact goal.
+ const target=last;
+ const preferred=Math.max(220,Math.min(e.range*.82,e.preferredRange));
+ const radii=[preferred*.88,preferred,Math.min(e.range*.92,preferred*1.12)];
+ let best=null,bestScore=-Infinity;
+ for(const rad of radii)for(let k=-3;k<=3;k++){
+  const angle=target.a+sector+k*.18;
+  const p={x:wrap(target.x+Math.cos(angle)*rad,W),y:wrap(target.y+Math.sin(angle)*rad,H)};
+  if(!clearTacticalPoint(e,p,room))continue;
+  const clear=!segmentObstructed(p.x,p.y,target.x,target.y,room.obstacles,6);
+  if(!clear)continue;
+  const travel=distance(e,p);
+  let nearby=1000;
+  for(const o of room.obstacles){const d=distance(p,o)-o.r;if(d<nearby)nearby=d;}
+  const cover=Math.max(0,100-Math.abs(nearby-75)*1.3);
+  // Sector discipline has greater weight than travel distance so flankers
+  // actually cross around the target rather than choosing the shortest approach.
+  let score=800-Math.abs(k)*95-travel*.12-Math.abs(rad-preferred)*.5;
+  if(e.tactic==='cover')score+=cover*2;
+  if(e.tactic==='sniper')score+=rad*.2;
+  // Separate occupied lanes to avoid the entire group selecting the same corner.
+  for(const other of room.enemies)if(other!==e&&other.hp>0&&other.tacticPoint){
+   const d=distance(p,other.tacticPoint);
+   score-=Math.max(0,180-d)*2.4;
+  }
+  if(score>bestScore){bestScore=score;best=p;}
+ }
+ return best;
+}
 function steerAI(e,t,room,dt){
  const dx=delta(t.x,e.x,W),dy=delta(t.y,e.y,H),dist=Math.hypot(dx,dy),target=Math.atan2(dy,dx);
- const obstaclesNow=room.obstacles.length;
- const canSeeTarget=!segmentObstructed(e.x,e.y,t.x,t.y,room.obstacles,e.r+8);
- const tCell=navIndex(t.x,t.y);
- let waypoint=null;
- if(!canSeeTarget&&dist>e.r+t.r+30){
-  if((room.elapsed>=e.navAt||e.navTarget!==tCell||e.navObstacleCount!==obstaclesNow)&&room.navBudget>0){
-   room.navBudget--;e.navPath=findNavPath(e,t,room);e.navAt=room.elapsed+1.2+Math.random()*.8;
-   e.navTarget=tCell;e.navObstacleCount=obstaclesNow;
+ const canSeeTarget=!segmentObstructed(e.x,e.y,t.x,t.y,room.obstacles,7);
+ if(canSeeTarget){e.lastSeen={x:t.x,y:t.y,a:t.a};e.lastSeenAt=room.elapsed;}
+ const hasMemory=room.elapsed-e.lastSeenAt<7;
+ // Enemies do not continually pursue a target they cannot see indefinitely.
+ if(room.elapsed>=e.tacticUntil){
+  const sector=tacticalSector(e,room);
+  // Only one unit holds the frontal pressure lane; other tanks fan out.
+  e.tactic=sector.index===0?'hold':(e.type==='sniper'?'sniper':sector.index===3?'cover':'flank');
+  e.tacticUntil=room.elapsed+rand(18,25);
+  e.tacticNext=0;
+ }
+ if(hasMemory && room.elapsed>=e.tacticNext){
+  e.tacticPoint=pickTacticalPoint(e,t,room);
+  e.tacticNext=room.elapsed+rand(3.3,5.8);
+ }
+ if(!hasMemory){
+  // Search for contact rather than knowing the player's current hidden location.
+  if(room.elapsed>=e.tacticNext){
+   e.tacticPoint={x:wrap(e.x+rand(-360,360),W),y:wrap(e.y+rand(-360,360),H)};
+   if(!clearTacticalPoint(e,e.tacticPoint,room))e.tacticPoint={x:e.x,y:e.y};
+   e.tacticNext=room.elapsed+rand(5,9);
   }
-  // Smooth corners where the actual square-collision ray has clearance.
-  while(e.navPath.length>1 && !segmentObstructed(e.x,e.y,e.navPath[1].x,e.navPath[1].y,room.obstacles,e.r+7))e.navPath.shift();
-  if(e.navPath.length&&distance(e,e.navPath[0])<Math.max(17,e.r*.8))e.navPath.shift();
-  waypoint=e.navPath[0]||null;
- }else{e.navPath=[];e.navTarget=tCell;}
- let wanted=waypoint?Math.atan2(delta(waypoint.y,e.y,H),delta(waypoint.x,e.x,W)):target;
- // Keep a tactical distance only when there is an unobstructed firing corridor.
- let desiredSpeed=e.speed;
- if(!waypoint&&canSeeTarget){
-  if(dist<e.range*.29)desiredSpeed=-e.speed*.27;
-  else if(dist<e.range*.62)desiredSpeed=e.speed*.25;
  }
- if(waypoint){
-  const wayDist=distance(e,waypoint);
-  if(wayDist<65)desiredSpeed=Math.min(desiredSpeed,e.speed*.55);
+ const remembered=hasMemory?e.lastSeen:null;
+ // When no line of sight, track the last known position briefly; not the live player.
+ const goal=e.tacticPoint||remembered;
+ const goalDistance=goal?distance(e,goal):0;
+ let waypoint=null;
+ if(goal && goalDistance>33){
+  const obstructed=segmentObstructed(e.x,e.y,goal.x,goal.y,room.obstacles,e.r+7);
+  if(obstructed){
+   const goalCell=navIndex(goal.x,goal.y),count=room.obstacles.length;
+   if((room.elapsed>=e.navAt||e.navTarget!==goalCell||e.navObstacleCount!==count)&&room.navBudget>0){
+    room.navBudget--;e.navPath=findNavPath(e,goal,room);
+    e.navAt=room.elapsed+rand(1.25,2.0);e.navTarget=goalCell;e.navObstacleCount=count;
+   }
+   while(e.navPath.length>1&&!segmentObstructed(e.x,e.y,e.navPath[1].x,e.navPath[1].y,room.obstacles,e.r+7))e.navPath.shift();
+   if(e.navPath.length&&distance(e,e.navPath[0])<Math.max(19,e.r))e.navPath.shift();
+   waypoint=e.navPath[0]||null;
+  }else{e.navPath=[];}
+ }else e.navPath=[];
+ const steerTarget=waypoint||goal;
+ let wanted=steerTarget?Math.atan2(delta(steerTarget.y,e.y,H),delta(steerTarget.x,e.x,W)):e.a;
+ let desiredSpeed=steerTarget?e.speed:0;
+ // Emergency spacing is unconditional, even while following an A* waypoint.
+ // Braking/turning to a retreat heading prevents driving forward into the player.
+ const safetyDist=Math.max(200,Math.min(e.range*.66,e.preferredRange*.91));
+ const hardLimit=safetyDist*.79;
+ if(dist<hardLimit){
+   const away=target+Math.PI;
+   wanted=away;
+   desiredSpeed=e.speed*.83;
+   // A unit already facing away can withdraw immediately; otherwise slow and turn.
+   if(Math.abs(diff(wanted,e.a))>.72)desiredSpeed=0;
+ }else if(canSeeTarget&&dist<safetyDist){
+   if(e.tactic==='hold'||goalDistance<85)desiredSpeed=0;
  }
- // When stuck, withdraw to a clear area, then rebuild the entire route.
+ if(goal&&goalDistance<58&&!waypoint&&dist>=hardLimit)desiredSpeed=0;
+ if(waypoint&&dist>=hardLimit&&distance(e,waypoint)<67)desiredSpeed=Math.min(desiredSpeed,e.speed*.52);
  if(e.aiMode==='reverse'&&room.elapsed>=e.reverseUntil){
-  e.aiMode='approach';e.navPath=[];e.navAt=0;e.avoidSide*=-1;
+  e.aiMode='approach';e.navPath=[];e.navAt=0;e.tacticNext=0;e.avoidSide*=-1;
  }
- const reversing=e.aiMode==='reverse';
- if(reversing){
-  desiredSpeed=-e.speed*.48;
-  wanted=e.a+e.avoidSide*.32;
+ if(e.aiMode==='reverse'){
+  desiredSpeed=-e.speed*.48;wanted=e.a+e.avoidSide*.32;
  }
  const accel=e.type==='heavy'?24:e.type==='sniper'?36:e.type==='normal'?34:40;
- const maxTurn=(e.type==='heavy'?.7:1.15);
+ const maxTurn=e.type==='heavy'?.7:1.15;
  const turn=clamp(diff(wanted,e.a),-maxTurn*dt,maxTurn*dt);
  e.a+=turn;
- // Slow down during substantial direction changes, avoiding sideways wall pushing.
- if(!reversing&&Math.abs(diff(wanted,e.a))>.38)desiredSpeed=Math.min(desiredSpeed,e.speed*.24);
+ if(e.aiMode!=='reverse'&&Math.abs(diff(wanted,e.a))>.38)desiredSpeed=Math.min(desiredSpeed,e.speed*.24);
  e.velocity+=clamp(desiredSpeed-e.velocity,-accel*dt,accel*dt);
  if(Math.abs(turn)>dt*.4)e.velocity*=1-.24*dt;
- const wasX=e.x,wasY=e.y;
+ const oldX=e.x,oldY=e.y;
  const movedNow=move(e,e.velocity,dt,room);
- const movedDist=Math.hypot(delta(e.x,wasX,W),delta(e.y,wasY,H));
+ const movedDist=Math.hypot(delta(e.x,oldX,W),delta(e.y,oldY,H));
  if(movedDist<Math.abs(e.velocity)*dt*.28&&Math.abs(e.velocity)>5)e.stuckFor+=dt;
  else e.stuckFor=Math.max(0,e.stuckFor-dt*1.5);
  if(e.stuckFor>.55){
@@ -307,8 +382,9 @@ function steerAI(e,t,room,dt){
   e.aiMode='reverse';e.reverseUntil=room.elapsed+Math.min(2.1,1.0+e.stuckAttempts*.22);
   e.navAt=0;e.navPath=[];e.velocity=Math.min(0,e.velocity);
  }
- if(movedNow&&!reversing&&e.stuckAttempts>0&&Math.random()<dt*.15)e.stuckAttempts--;
- return {target,dist};
+ if(movedNow&&e.aiMode!=='reverse'&&e.stuckAttempts>0&&Math.random()<dt*.15)e.stuckAttempts--;
+ const turretTarget=canSeeTarget?target:remembered?Math.atan2(delta(remembered.y,e.y,H),delta(remembered.x,e.x,W)):e.turret;
+ return {target:turretTarget,dist,canSeeTarget};
 }
 function step(room,dt){room.elapsed+=dt;
  room.navBudget=2;const obstacleRevision=room.obstacles.length;
@@ -335,10 +411,10 @@ const t=room.tank;if(!room.clients.driver&&!room.clients.gunner)return;
  if(room.enemies.length===0&&room.spawnTimer<=0&&t.hp>0)spawnWave(room);
  room.spawnTimer=Math.max(0,room.spawnTimer-dt);
  for(const e of room.enemies){if(e.hp<=0)continue;
- const {target,dist}=steerAI(e,t,room,dt);
+ const {target,dist,canSeeTarget}=steerAI(e,t,room,dt);
  e.turret+=clamp(diff(target,e.turret),-1.3*dt,1.3*dt);
  e.cooldown-=dt;
- if(dist<e.range&&e.cooldown<=0&&t.hp>0&&Math.abs(diff(target,e.turret))<.16 && !collideOb(e.x,e.y,e.r,room.obstacles) && !segmentObstructed(e.x,e.y,t.x,t.y,room.obstacles,7)){
+ if(canSeeTarget&&dist<e.range&&dist>e.r+t.r+10&&e.cooldown<=0&&t.hp>0&&Math.abs(diff(target,e.turret))<.16 && !collideOb(e.x,e.y,e.r,room.obstacles) && !segmentObstructed(e.x,e.y,t.x,t.y,room.obstacles,7)){
  // An occasional HE round from medium/heavy enemies, not every shot.
  const he=e.heStock>0&&e.type!=='scout'&&Math.random()<.16;
  fire(room,'enemy',e,e.damage,e.turret,he?'HE':'AP');if(he)e.heStock--;
