@@ -33,7 +33,7 @@ function showSteeringButtons(){
 }
 $('settingsButton').onclick=()=>{$('settingsOverlay').style.display='flex';buttonTurn=0;};
 $('closeSettings').onclick=()=>{$('settingsOverlay').style.display='none';};
-let signal=null,peer=null,channel=null,game=null,host=false,netOk=false,netCode='',timer=null;
+let signal=null,peer=null,channel=null,game=null,host=false,netOk=false,netCode='',timer=null,signalPeerLeft=false,dcGrace=null;
 const note=msg=>{$('msg').textContent=msg; if(joined)$('hint').textContent=msg;};
 // The host owns the authoritative simulation; both roles can request a reset.
 let lastResetAt=0;
@@ -72,13 +72,32 @@ function showGame(){
 function wirePeer(){
  peer=new RTCPeerConnection({iceServers:[]});
  peer.onicecandidate=e=>{if(e.candidate&&signal?.readyState===1)signal.send(JSON.stringify({type:'ice',candidate:e.candidate}));};
- peer.onconnectionstatechange=()=>{if(['failed','disconnected','closed'].includes(peer.connectionState)){note('P2P接続が切断されました。ページを再読み込みして再接続してください。');netOk=false;}};
+ peer.onconnectionstatechange=()=>{
+  const status=peer.connectionState;
+  if(status==='connected'){
+   if(dcGrace){clearTimeout(dcGrace);dcGrace=null;}
+   if(channel?.readyState==='open'){netOk=true;note('P2P接続中');}
+  }else if(status==='disconnected'){
+   // ICE disconnected can be temporary when mobile Wi-Fi switches or the radio sleeps.
+   if(dcGrace)clearTimeout(dcGrace);
+   note('通信が不安定です。再接続を確認中…');
+   dcGrace=setTimeout(()=>{
+    dcGrace=null;
+    if(peer?.connectionState==='disconnected')note('P2P通信が不安定です（接続状態を確認してください）');
+   },6000);
+  }else if(status==='failed'||status==='closed'){
+   if(dcGrace){clearTimeout(dcGrace);dcGrace=null;}
+   netOk=false;
+   note('P2P接続が切断されました（'+status+'）。Wi-Fiを確認して再入室してください');
+  }
+ };
  if(host){ channel=peer.createDataChannel('game',{ordered:true});wireData();}
  else peer.ondatachannel=e=>{channel=e.channel;wireData();};
 }
 function wireData(){
- channel.onopen=()=>{netOk=true;note('P2P接続成功');if(!joined)showGame();};
- channel.onclose=()=>{netOk=false;note('P2P通信が切断されました');};
+ channel.onopen=()=>{netOk=true;signalPeerLeft=false;note('P2P接続成功');if(!joined)showGame();};
+ channel.onclose=()=>{netOk=false;note('P2Pゲーム通信が切断されました。Wi-Fiを確認して再入室してください');};
+ channel.onerror=()=>{note('P2Pゲーム通信にエラーが発生しました');};
  channel.onmessage=e=>{
   let m;try{m=JSON.parse(e.data);}catch{return;}
   if(host){
@@ -100,7 +119,7 @@ $('join').onclick=()=>{
  signal=new WebSocket(`${protocol}://${location.host}/p2p-signal`);
  signal.onopen=()=>{sendSignal({type:'join',role,code});if(!host)note('ホストの入室を待っています…');};
  signal.onerror=()=>note('接続用サーバーへ接続できません');
- signal.onclose=()=>{if(!netOk)note('接続サーバーが切断されました');};
+ signal.onclose=()=>{if(channel?.readyState==='open'){signalPeerLeft=true;return;}if(!netOk)note('接続サーバーが切断されました');};
  signal.onmessage=async e=>{
   let m;try{m=JSON.parse(e.data);}catch{return;}
   try{
@@ -113,7 +132,11 @@ $('join').onclick=()=>{
    else if(m.type==='ice'&&peer){
     if(peer.remoteDescription)await peer.addIceCandidate(m.candidate);
     else pendingIce.push(m.candidate);
-   }else if(m.type==='peer-left'){netOk=false;note('相手の接続が切れました');}
+   }else if(m.type==='peer-left'){
+    // The Render signaling socket is independent from the established WebRTC data channel.
+    signalPeerLeft=true;
+    if(channel?.readyState!=='open'){netOk=false;note('相手との接続が終了しました（ゲーム通信未確立）');}
+   }
    if(peer?.remoteDescription&&pendingIce.length){for(const ice of pendingIce.splice(0))await peer.addIceCandidate(ice);}
   }catch(err){note('P2P接続エラー：'+err.message);}
  };
