@@ -3,12 +3,32 @@ const $=id=>document.getElementById(id),canvas=$('game'),ctx=canvas.getContext('
 $('shellAP').onclick=()=>selectShell('AP');$('shellHE').onclick=()=>selectShell('HE');
 function selectShell(v){shell=v;$('shellAP').classList.toggle('active',v==='AP');$('shellHE').classList.toggle('active',v==='HE');}
 $('driver').onclick=()=>choose('driver');$('gunner').onclick=()=>choose('gunner');function choose(r){role=r;$('driver').classList.toggle('active',r==='driver');$('gunner').classList.toggle('active',r==='gunner');}
+const touchDevice=matchMedia('(pointer: coarse)').matches;
+let viewScale=1;
+const activeTouches=new Map();let pinch=null,turnTouch=null,turnValue=0,throttleValue=0,direction=1;
+const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
+function updateZoom(next){viewScale=clamp(next,0.48,1.55);const label=$('zoomLabel');label.textContent=`画角 ${Math.round(viewScale*100)}%`;}
+canvas.addEventListener('wheel',e=>{if(!joined)return;e.preventDefault();updateZoom(viewScale*Math.exp(-e.deltaY*.0013));},{passive:false});
+function pinchDistance(){const a=[...activeTouches.values()];return a.length>=2?Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y):0;}
+canvas.addEventListener('pointerdown',e=>{if(!joined||e.pointerType!=='touch')return;activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(activeTouches.size>=2){pinch={d:pinchDistance(),z:viewScale};drag=null;}});
+canvas.addEventListener('pointermove',e=>{if(!activeTouches.has(e.pointerId))return;activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pinch&&activeTouches.size>=2)updateZoom(pinch.z*pinchDistance()/Math.max(1,pinch.d));});
+function endTouch(e){activeTouches.delete(e.pointerId);if(activeTouches.size<2)pinch=null;}
+canvas.addEventListener('pointerup',endTouch);canvas.addEventListener('pointercancel',endTouch);
+$('throttle').addEventListener('input',e=>{throttleValue=Number(e.target.value)/100;$('throttleLabel').textContent=`速度 ${Math.round(throttleValue*100)}%`;});
+$('direction').onclick=()=>{direction*=-1;$('direction').textContent=direction>0?'▲ 前進':'▼ 後退';};
+const steer=$('steerZone');
+steer.addEventListener('pointerdown',e=>{if(!joined||role!=='driver')return;turnTouch={id:e.pointerId,start:e.clientX};steer.setPointerCapture(e.pointerId);e.preventDefault();});
+steer.addEventListener('pointermove',e=>{if(!turnTouch||turnTouch.id!==e.pointerId)return;turnValue=clamp((e.clientX-turnTouch.start)/Math.max(55,innerWidth*.15),-1,1);$('steerGuide').textContent=turnValue>.08?'右旋回 →':turnValue<-.08?'← 左旋回':'左右スライドで旋回 ↔';e.preventDefault();});
+function stopTurn(e){if(turnTouch&&turnTouch.id===e.pointerId){turnTouch=null;turnValue=0;$('steerGuide').textContent='左右スライドで旋回 ↔';}}
+steer.addEventListener('pointerup',stopTurn);steer.addEventListener('pointercancel',stopTurn);
 let signal=null,peer=null,channel=null,game=null,host=false,netOk=false,netCode='',timer=null;
 const note=msg=>{$('msg').textContent=msg; if(joined)$('hint').textContent=msg;};
 function showGame(){
  joined=true;$('menu').style.display='none';$('hud').style.display='flex';$('fs').style.display='block';$('hint').style.display='block';
- $('stickArea').style.display=role==='driver'?'block':'none';$('shellPicker').style.display=role==='gunner'?'flex':'none';
- $('hint').textContent=role==='driver'?'操縦手：左スティックで移動':'砲手：自機からドラッグして射撃';
+ $('steerZone').style.display=role==='driver'&&touchDevice?'block':'none';
+ $('throttlePanel').style.display=role==='driver'&&touchDevice?'flex':'none';
+ $('zoomLabel').style.display='block';$('shellPicker').style.display=role==='gunner'?'flex':'none';
+ $('hint').textContent=role==='driver'?'操縦手：左で旋回／右でアクセル・前後切替':'砲手：自機からドラッグして射撃';
 }
 function wirePeer(){
  peer=new RTCPeerConnection({iceServers:[]});
@@ -69,18 +89,18 @@ function sendInput(m){
 }
 $('fs').onclick=()=>{if(!document.fullscreenElement)document.documentElement.requestFullscreen?.().catch(()=>{});else document.exitFullscreen?.();};window.addEventListener('keydown',e=>{keys[e.code]=true;if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();if(e.code==='KeyR'&&state?.tank.hp<=0)sendInput({type:'restart'});});window.addEventListener('keyup',e=>keys[e.code]=false);// Aim gesture starts only near the player tank. Releasing fires one round.
 function worldAim(e){if(!state)return;const dx=e.clientX-innerWidth/2,dy=e.clientY-innerHeight/2;if(Math.hypot(dx,dy)>14)aim=Math.atan2(dy,dx);}
-canvas.addEventListener('pointerdown',e=>{if(role!=='gunner'||!joined||!state||state.tank.hp<=0)return;
+canvas.addEventListener('pointerdown',e=>{if(role!=='gunner'||!joined||!state||state.tank.hp<=0||activeTouches.size>=2)return;
  const dx=e.clientX-innerWidth/2,dy=e.clientY-innerHeight/2;
  if(Math.hypot(dx,dy)>Math.max(45,Math.min(innerWidth,innerHeight)*.14))return;
  drag={id:e.pointerId,x:e.clientX,y:e.clientY};canvas.setPointerCapture(e.pointerId);e.preventDefault();});
-canvas.addEventListener('pointermove',e=>{if(!drag||drag.id!==e.pointerId)return;
+canvas.addEventListener('pointermove',e=>{if(!drag||drag.id!==e.pointerId||pinch)return;
  drag.x=e.clientX;drag.y=e.clientY;worldAim(e);e.preventDefault();});
-canvas.addEventListener('pointerup',e=>{if(!drag||drag.id!==e.pointerId)return;
+canvas.addEventListener('pointerup',e=>{if(!drag||drag.id!==e.pointerId||pinch)return;
  const distance=Math.hypot(e.clientX-innerWidth/2,e.clientY-innerHeight/2);
  if(distance>Math.max(35,Math.min(innerWidth,innerHeight)*.1)&&state?.tank.reload<=0&&(shell==='AP'?state?.tank.ammoAP:state?.tank.ammoHE)>0)shotId++;
  drag=null;e.preventDefault();});
 canvas.addEventListener('pointercancel',()=>{drag=null;});
-function stick(id,knob,fn){let el=$(id);el.addEventListener('pointerdown',e=>{el.setPointerCapture(e.pointerId);update(e);});el.addEventListener('pointermove',e=>{if(el.hasPointerCapture(e.pointerId))update(e);});for(let ev of ['pointerup','pointercancel'])el.addEventListener(ev,()=>{fn(0,0);$(knob).style.transform='translate(0px,0px)';});function update(e){let r=el.getBoundingClientRect(),dx=e.clientX-(r.left+r.width/2),dy=e.clientY-(r.top+r.height/2),mag=Math.hypot(dx,dy),lim=r.width*.34;if(mag>lim){dx*=lim/mag;dy*=lim/mag;}$(knob).style.transform=`translate(${dx}px,${dy}px)`;fn(dx/lim,dy/lim);}}stick('stickArea','knob',(x,y)=>{joy={x,y};});
+function stick(id,knob,fn){let el=$(id);el.addEventListener('pointerdown',e=>{el.setPointerCapture(e.pointerId);update(e);});el.addEventListener('pointermove',e=>{if(el.hasPointerCapture(e.pointerId))update(e);});for(let ev of ['pointerup','pointercancel'])el.addEventListener(ev,()=>{fn(0,0);$(knob).style.transform='translate(0px,0px)';});function update(e){let r=el.getBoundingClientRect(),dx=e.clientX-(r.left+r.width/2),dy=e.clientY-(r.top+r.height/2),mag=Math.hypot(dx,dy),lim=r.width*.34;if(mag>lim){dx*=lim/mag;dy*=lim/mag;}$(knob).style.transform=`translate(${dx}px,${dy}px)`;fn(dx/lim,dy/lim);}}
 const delta=(a,b,n)=>{let d=a-b;return d-Math.round(d/n)*n};function resize(){let d=devicePixelRatio||1;canvas.width=Math.round(innerWidth*d);canvas.height=Math.round(innerHeight*d);ctx.setTransform(d,0,0,d,0,0);}window.addEventListener('resize',resize);resize();
 function box(x,y,w,h,color){ctx.fillStyle=color;ctx.fillRect(x,y,w,h);}function tank(x,y,a,turret,color,scale=1){ctx.save();ctx.translate(x,y);ctx.rotate(a);ctx.scale(scale,scale);box(-20,-13,40,26,'#1b2520');box(-16,-16,9,32,'#303a32');box(7,-16,9,32,'#303a32');box(-17,-11,34,22,color);box(-8,-7,15,14,'#a2b29555');ctx.restore();ctx.save();ctx.translate(x,y);ctx.rotate(turret);box(0,-4,27,8,'#d6cc9b');ctx.beginPath();ctx.arc(0,0,10*scale,0,PI);ctx.fillStyle=color;ctx.fill();ctx.restore();}
 function render(){
@@ -88,7 +108,7 @@ function render(){
  const now=performance.now(),dt=visualFrameAt?Math.min(.08,(now-visualFrameAt)/1000):1/60;
  visualFrameAt=now;
  const blend=1-Math.exp(-dt*13);
- const w=innerWidth,h=innerHeight;ctx.clearRect(0,0,w,h);box(0,0,w,h,'#566c54');if(!state)return;const t=state.tank,map=state.map;let zoom=Math.max(.48,Math.min(.85,w/1250,h/690)); // wider battlefield / small tank
+ const w=innerWidth,h=innerHeight;ctx.clearRect(0,0,w,h);box(0,0,w,h,'#566c54');if(!state)return;const t=state.tank,map=state.map;let zoom=Math.max(.48,Math.min(.85,w/1250,h/690))*viewScale; // wider battlefield / small tank
 ctx.save();ctx.translate(w/2,h/2);ctx.scale(zoom,zoom);ctx.translate(-t.x,-t.y);
 const drawCopies=(obj,fn)=>{for(let ix=-1;ix<=1;ix++)for(let iy=-1;iy<=1;iy++){const x=obj.x+ix*map.w,y=obj.y+iy*map.h;if(Math.abs(x-t.x)>w/zoom*.7+100||Math.abs(y-t.y)>h/zoom*.7+100)continue;fn(x,y);}};
 // terrain grid is periodic
@@ -156,7 +176,7 @@ if(role==='gunner'&&drag){
 
 $('leftInfo').innerHTML=`🚙 ${role==='driver'?'操縦手':'砲手'} | 装甲 ${Math.ceil(t.hp)}/${t.maxHp}<br>AP ${t.ammoAP} / HE ${t.ammoHE} | ${t.shell} ${t.reload>0?'装填中': '✅ 発射可能'}`;$('rightInfo').innerHTML=`WAVE ${state.wave} | 撃破 ${state.kills} | 敵 ${state.enemies.length}<br><span style="color:#dfcb82">${state.players.driver?'●':'○'}操縦手 ${state.players.gunner?'●':'○'}砲手</span>`;
 if(t.hp<=0){box(0,h*.42,w,h*.2,'#08150ce8');ctx.fillStyle='#fff4de';ctx.font='bold 27px system-ui';ctx.textAlign='center';ctx.fillText('戦車撃破 - GAME OVER',w/2,h*.51);ctx.font='14px system-ui';ctx.fillText('PC: Rで再挑戦',w/2,h*.57);ctx.textAlign='left';}}
-setInterval(()=>{if(!joined)return;if(role==='driver'){const drive=Math.max(-1,Math.min(1,(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0)-joy.y));const turn=Math.max(-1,Math.min(1,(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0)+joy.x));sendInput({type:'input',drive,turn});}else{sendInput({type:'input',aim,shotId,shell});}},50);
+setInterval(()=>{if(!joined)return;if(role==='driver'){const drive=Math.max(-1,Math.min(1,(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0)-(touchDevice?direction*throttleValue:joy.y)));const turn=Math.max(-1,Math.min(1,(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0)+(touchDevice?turnValue:joy.x)));sendInput({type:'input',drive,turn});}else{sendInput({type:'input',aim,shotId,shell});}},50);
 
 // Start the animation loop once at initialization.
 render();
